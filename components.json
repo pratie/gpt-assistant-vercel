@@ -1,16 +1,268 @@
-{
-  "$schema": "https://ui.shadcn.com/schema.json",
-  "style": "default",
-  "rsc": true,
-  "tsx": true,
-  "tailwind": {
-    "config": "tailwind.config.ts",
-    "css": "app/globals.css",
-    "baseColor": "gray",
-    "cssVariables": false
-  },
-  "aliases": {
-    "utils": "@/lib/utils",
-    "components": "@/components"
-  }
-}
+import pandas as pd
+import numpy as np
+from collections import Counter
+import re
+
+# First, let's load and explore your CSV
+def load_and_explore_csv(file_path):
+    """Load CSV and show basic info"""
+    print("Loading CSV file...")
+    df = pd.read_csv(file_path)
+    
+    print(f"\n✓ Loaded {len(df)} records")
+    print(f"\nColumns found: {list(df.columns)}")
+    
+    # Show basic stats
+    print(f"\nFeedback distribution:")
+    print(df['Feedback'].value_counts())
+    
+    # Check for any data issues
+    print(f"\nRecords with User Justification: {df['User Justification Free Text'].notna().sum()}")
+    
+    return df
+
+def quick_pattern_analysis(df):
+    """
+    Quick and dirty pattern analysis for error prioritization
+    """
+    # Filter only errors
+    errors = df[df['Feedback'].isin(['Incorrect', 'N/A']) | df['Feedback'].isna()]
+    
+    print(f"\n{'='*70}")
+    print(f"TOTAL ERRORS FOUND: {len(errors)} out of {len(df)} records ({len(errors)/len(df)*100:.1f}%)")
+    print(f"{'='*70}")
+    
+    # 1. Simple keyword-based categorization
+    error_patterns = {
+        'Format Issues': ['format', 'formatting', 'phone number format', 'date format', 'needs formatting'],
+        'Missing Data': ['no .* provided', 'missing', 'not found', 'unable to extract', 'not provided', 'no .* was provided'],
+        'Wrong Extraction': ['wrong', 'incorrect', 'extracted .* instead', 'should be', 'not correct'],
+        'Partial Extraction': ['only', 'partial', 'incomplete', 'rest of', 'partially'],
+        'Context Issues': ['context', 'interpretation', 'understood', 'misunderstood'],
+        'Merge/Classification': ['merge', 'classification', 'should be merged', 'merge issue'],
+        'Validation Issues': ['invalid', 'not valid', 'validation', 'failed validation']
+    }
+    
+    # Categorize each error
+    categorized = []
+    uncategorized_examples = []
+    
+    for idx, row in errors.iterrows():
+        justification = str(row.get('User Justification Free Text', '')).lower().strip()
+        if justification == 'nan' or not justification or justification == '':
+            continue
+            
+        categories_found = []
+        for category, keywords in error_patterns.items():
+            for keyword in keywords:
+                if re.search(keyword, justification, re.IGNORECASE):
+                    categories_found.append(category)
+                    break
+        
+        if not categories_found:
+            categories_found = ['Other']
+            uncategorized_examples.append(justification[:100])  # Store first 100 chars
+            
+        categorized.append({
+            'justification': justification,
+            'category': categories_found[0],  # Primary category
+            'all_categories': categories_found,
+            'field_value': row.get('Field Value', ''),
+            'sai_value': row.get('SAI JSON Field Value', ''),
+            'original_index': idx
+        })
+    
+    cat_df = pd.DataFrame(categorized)
+    
+    if len(cat_df) == 0:
+        print("\nNo errors with justification found!")
+        return None, None
+    
+    # 2. Category Summary
+    print("\n=== ERROR CATEGORIES ===")
+    category_counts = cat_df['category'].value_counts()
+    for cat, count in category_counts.items():
+        print(f"{cat:<25} {count:>5} ({count/len(cat_df)*100:>5.1f}%)")
+    
+    # Show uncategorized examples if any
+    if uncategorized_examples:
+        print(f"\n{len(uncategorized_examples)} 'Other' category examples:")
+        for i, ex in enumerate(uncategorized_examples[:5]):
+            print(f"  {i+1}. {ex}")
+    
+    # 3. Find common phrases (3-grams)
+    print("\n=== COMMON ERROR PHRASES ===")
+    all_text = ' '.join(cat_df['justification'].tolist())
+    words = all_text.split()
+    
+    # Find 3-grams
+    three_grams = []
+    for i in range(len(words)-2):
+        three_gram = ' '.join(words[i:i+3])
+        if len(three_gram) > 10:  # Skip very short phrases
+            three_grams.append(three_gram)
+    
+    common_phrases = Counter(three_grams).most_common(20)
+    print("\nMost common 3-word phrases:")
+    for phrase, count in common_phrases:
+        if count > 2:  # Only show phrases that appear multiple times
+            print(f"  '{phrase}': {count} times")
+    
+    # 4. Field-specific analysis
+    print("\n=== FIELD-SPECIFIC ERRORS ===")
+    # Try to extract field names from justifications
+    field_patterns = {
+        'phone': ['phone', 'telephone', 'contact number', 'cell', 'mobile'],
+        'name': ['name', 'first name', 'last name', 'hcp name', 'patient name', 'hanh'],
+        'address': ['address', 'street', 'city', 'state', 'zip', 'location'],
+        'date': ['date', 'dob', 'birth date', 'appointment date', 'visit date'],
+        'email': ['email', 'e-mail', 'mail'],
+        'id': ['id', 'identifier', 'number', 'mrn', 'patient id'],
+        'contact': ['contact', 'reporter', 'consent']
+    }
+    
+    field_errors = {}
+    for idx, row in cat_df.iterrows():
+        just = row['justification']
+        for field, keywords in field_patterns.items():
+            for keyword in keywords:
+                if keyword in just:
+                    if field not in field_errors:
+                        field_errors[field] = []
+                    field_errors[field].append({
+                        'category': row['category'],
+                        'example': just[:80]
+                    })
+                    break
+    
+    print("\nErrors by field type:")
+    for field, errors in sorted(field_errors.items(), key=lambda x: len(x[1]), reverse=True):
+        cat_counts = Counter([e['category'] for e in errors])
+        print(f"\n{field.upper()} ({len(errors)} errors):")
+        for cat, count in cat_counts.most_common():
+            print(f"  {cat}: {count}")
+    
+    # 5. Priority Matrix
+    print("\n=== PRIORITY RECOMMENDATIONS ===")
+    
+    # Define fix complexity (1=easy, 5=hard)
+    complexity = {
+        'Format Issues': 1,
+        'Validation Issues': 2,
+        'Missing Data': 3,
+        'Partial Extraction': 3,
+        'Wrong Extraction': 4,
+        'Context Issues': 5,
+        'Merge/Classification': 4,
+        'Other': 3
+    }
+    
+    priorities = []
+    for cat, count in category_counts.items():
+        comp = complexity.get(cat, 3)
+        impact = count * (6 - comp)  # Higher impact = more frequent + easier to fix
+        
+        # Get examples for this category
+        examples = cat_df[cat_df['category'] == cat]['justification'].head(3).tolist()
+        
+        priorities.append({
+            'category': cat,
+            'count': count,
+            'complexity': comp,
+            'impact_score': impact,
+            'examples': examples
+        })
+    
+    priority_df = pd.DataFrame(priorities).sort_values('impact_score', ascending=False)
+    
+    print("\nFix Priority (sorted by impact):")
+    print(f"{'Category':<25} {'Count':<10} {'Complexity':<12} {'Impact Score'}")
+    print("-"*60)
+    for _, row in priority_df.iterrows():
+        complexity_label = ['', 'Easy', 'Medium', 'Medium', 'Hard', 'Very Hard'][row['complexity']]
+        print(f"{row['category']:<25} {row['count']:<10} {complexity_label:<12} {row['impact_score']:.0f}")
+    
+    # 6. Actionable Insights
+    print("\n=== TOP 3 ACTIONABLE INSIGHTS ===")
+    
+    for i in range(min(3, len(priority_df))):
+        row = priority_df.iloc[i]
+        print(f"\n{i+1}. {row['category'].upper()}")
+        print(f"   - Affects {row['count']} cases ({row['count']/len(cat_df)*100:.1f}% of all errors)")
+        print(f"   - Complexity: {['', 'Easy', 'Medium', 'Medium', 'Hard', 'Very Hard'][row['complexity']]}")
+        print(f"   - Impact Score: {row['impact_score']:.0f}")
+        
+        # Get examples
+        print(f"   - Examples:")
+        for j, ex in enumerate(row['examples'][:2]):
+            print(f"     {j+1}. \"{ex[:80]}...\"" if len(ex) > 80 else f"     {j+1}. \"{ex}\"")
+        
+        # Specific recommendations
+        if row['category'] == 'Format Issues':
+            print("\n   RECOMMENDED FIX:")
+            print("   → Implement post-processing formatters")
+            print("   → Add regex-based format validation")
+            print("   → Include format examples in prompts (e.g., 'Phone: (XXX) XXX-XXXX')")
+        elif row['category'] == 'Missing Data':
+            print("\n   RECOMMENDED FIX:")
+            print("   → Review extraction prompts for completeness")
+            print("   → Add fallback extraction with broader patterns")
+            print("   → Implement required field validation before output")
+        elif row['category'] == 'Wrong Extraction':
+            print("\n   RECOMMENDED FIX:")
+            print("   → Add negative examples to prompts")
+            print("   → Implement entity validation rules")
+            print("   → Add confidence scoring for extractions")
+        elif row['category'] == 'Partial Extraction':
+            print("\n   RECOMMENDED FIX:")
+            print("   → Enhance extraction patterns to capture full values")
+            print("   → Add continuation detection logic")
+            print("   → Implement completeness checks")
+    
+    # 7. Export results
+    print("\n=== EXPORT OPTIONS ===")
+    print("Results saved to:")
+    print("- error_categorization.csv (detailed categorization)")
+    print("- priority_matrix.csv (fix priorities)")
+    
+    # Save results
+    cat_df.to_csv('error_categorization.csv', index=False)
+    priority_df.to_csv('priority_matrix.csv', index=False)
+    
+    return cat_df, priority_df
+
+# Main execution function
+def main():
+    """Main function to run the analysis"""
+    # CHANGE THIS TO YOUR CSV FILE PATH
+    csv_file_path = 'your_validation_data.csv'  # <-- UPDATE THIS!
+    
+    try:
+        # Load the CSV
+        df = load_and_explore_csv(csv_file_path)
+        
+        # Run the analysis
+        print("\nStarting pattern analysis...")
+        categorized_df, priorities = quick_pattern_analysis(df)
+        
+        if categorized_df is not None:
+            print("\n✓ Analysis complete!")
+            print(f"\nTotal errors analyzed: {len(categorized_df)}")
+            print(f"Unique error patterns: {len(priorities)}")
+            
+            # Additional insights
+            print("\n=== QUICK STATS ===")
+            print(f"Average errors per category: {len(categorized_df) / len(priorities):.1f}")
+            print(f"Most common error type: {priorities.iloc[0]['category']} ({priorities.iloc[0]['count']} cases)")
+            print(f"Easiest high-impact fix: {priorities[priorities['complexity'] == 1].iloc[0]['category'] if len(priorities[priorities['complexity'] == 1]) > 0 else 'None found'}")
+            
+    except FileNotFoundError:
+        print(f"\n❌ Error: Could not find file '{csv_file_path}'")
+        print("Please update the csv_file_path variable with your actual file path")
+    except Exception as e:
+        print(f"\n❌ Error: {str(e)}")
+        print("Please check your CSV file format and ensure it has the required columns")
+
+# Run the analysis
+if __name__ == "__main__":
+    main()
