@@ -1,273 +1,170 @@
 import pandas as pd
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
-import matplotlib.pyplot as plt
 from collections import Counter
+import re
 
-# ===== CONFIGURATION - CHANGE THESE VALUES =====
-CSV_FILE = 'your_file.csv'  # Change to your CSV file name
-TEXT_COLUMN = 'User Justification Free Text'  # Change to your column name
-OUTPUT_PREFIX = 'results'  # Prefix for output files
-# ===============================================
+# Configuration
+CSV_FILE = 'your_file.csv'  # Change to your file name
+TEXT_COLUMN = 'User Justification Free Text'
 
-def kmeans_error_clustering(csv_file=CSV_FILE, text_column=TEXT_COLUMN, n_clusters=8):
+def find_patterns_in_justifications(csv_file=CSV_FILE, text_column=TEXT_COLUMN):
     """
-    Simple K-Means clustering for error messages
+    Find patterns in user justifications
     """
     print("="*70)
-    print(f"K-MEANS CLUSTERING ANALYSIS")
-    print(f"File: {csv_file}")
-    print(f"Column: {text_column}")
-    print(f"Clusters: {n_clusters}")
+    print("USER JUSTIFICATION PATTERN ANALYSIS")
     print("="*70)
-    
-    # 1. Load data
-    print("\n1. Loading data...")
-    try:
-        df = pd.read_csv(csv_file)
-        print(f"   ✓ Loaded {len(df)} rows")
-        print(f"   ✓ Columns found: {list(df.columns)}")
-    except FileNotFoundError:
-        print(f"   ❌ Error: Could not find file '{csv_file}'")
-        return None, None
-    except Exception as e:
-        print(f"   ❌ Error loading file: {e}")
-        return None, None
-    
-    # Check if column exists
-    if text_column not in df.columns:
-        print(f"   ❌ Error: Column '{text_column}' not found!")
-        print(f"   Available columns: {list(df.columns)}")
-        return None, None
-    
-    # Get text data and remove NaN values
-    texts = df[text_column].dropna().astype(str).tolist()
-    print(f"   ✓ Found {len(texts)} non-empty text entries")
-    
-    if len(texts) < n_clusters:
-        print(f"   ❌ Error: Not enough data! Only {len(texts)} texts for {n_clusters} clusters")
-        return None, None
-    
-    # 2. Convert text to numbers using TF-IDF
-    print("\n2. Converting text to numerical features...")
-    vectorizer = TfidfVectorizer(
-        max_features=100,        # Use top 100 most important terms
-        stop_words='english',    # Remove common English words
-        ngram_range=(1, 3),      # Use 1-word, 2-word, and 3-word phrases
-        min_df=2                 # Term must appear in at least 2 documents
-    )
-    
-    try:
-        X = vectorizer.fit_transform(texts)
-    except:
-        # If min_df=2 fails, try with min_df=1
-        vectorizer.min_df = 1
-        X = vectorizer.fit_transform(texts)
-    
-    feature_names = vectorizer.get_feature_names_out()
-    print(f"   ✓ Created {X.shape[1]} features from text")
-    
-    # 3. Perform K-Means clustering
-    print(f"\n3. Clustering into {n_clusters} groups...")
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-    cluster_labels = kmeans.fit_predict(X)
-    
-    # Calculate quality score
-    silhouette_avg = silhouette_score(X, cluster_labels)
-    print(f"   ✓ Clustering complete! Quality score: {silhouette_avg:.3f}")
-    print(f"   (Score explanation: -1=bad, 0=overlapping, 1=perfect)")
-    
-    # 4. Analyze each cluster
-    print("\n4. Analyzing clusters...")
-    print("-"*70)
-    
-    cluster_summaries = []
-    
-    for cluster_id in range(n_clusters):
-        # Get texts in this cluster
-        cluster_mask = cluster_labels == cluster_id
-        cluster_texts = [text for text, mask in zip(texts, cluster_mask) if mask]
-        cluster_size = len(cluster_texts)
-        
-        if cluster_size == 0:
-            continue
-        
-        # Get top terms for this cluster
-        cluster_center = kmeans.cluster_centers_[cluster_id]
-        top_indices = cluster_center.argsort()[-10:][::-1]
-        top_terms = [feature_names[i] for i in top_indices]
-        
-        # Print cluster summary
-        print(f"\nCLUSTER {cluster_id}: {cluster_size} items ({cluster_size/len(texts)*100:.1f}%)")
-        print(f"Key terms: {', '.join(top_terms[:5])}")
-        print("Sample texts:")
-        for i, text in enumerate(cluster_texts[:3]):
-            print(f"  {i+1}. \"{text[:80]}...\"" if len(text) > 80 else f"  {i+1}. \"{text}\"")
-        
-        # Store summary
-        cluster_summaries.append({
-            'cluster_id': cluster_id,
-            'size': cluster_size,
-            'percentage': cluster_size/len(texts)*100,
-            'top_terms': ', '.join(top_terms[:5]),
-            'sample_text': cluster_texts[0] if cluster_texts else ''
-        })
-    
-    # 5. Save results
-    print("\n" + "-"*70)
-    print("\n5. Saving results...")
-    
-    # Create a new dataframe with original data plus clusters
-    # Only include rows that have non-null text
-    df_with_text = df[df[text_column].notna()].copy()
-    df_with_text['cluster'] = cluster_labels
-    
-    # Save files with custom prefix
-    output_file1 = f'{OUTPUT_PREFIX}_with_clusters.csv'
-    output_file2 = f'{OUTPUT_PREFIX}_cluster_summary.csv'
-    output_file3 = f'{OUTPUT_PREFIX}_cluster_viz.png'
-    
-    df_with_text.to_csv(output_file1, index=False)
-    print(f"   ✓ Saved: {output_file1}")
-    
-    # Save cluster summary
-    summary_df = pd.DataFrame(cluster_summaries)
-    summary_df.to_csv(output_file2, index=False)
-    print(f"   ✓ Saved: {output_file2}")
-    
-    # 6. Create visualizations
-    print("\n6. Creating visualizations...")
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-    
-    # Cluster sizes bar chart
-    cluster_sizes = pd.Series(cluster_labels).value_counts().sort_index()
-    ax1.bar(cluster_sizes.index, cluster_sizes.values, color='skyblue')
-    ax1.set_xlabel('Cluster ID')
-    ax1.set_ylabel('Number of Items')
-    ax1.set_title('Distribution Across Clusters')
-    for i, v in enumerate(cluster_sizes.values):
-        ax1.text(i, v + 5, str(v), ha='center')
-    
-    # Pie chart of cluster distribution
-    ax2.pie(cluster_sizes.values, labels=[f'Cluster {i}' for i in cluster_sizes.index], 
-            autopct='%1.1f%%', startangle=90)
-    ax2.set_title('Cluster Size Distribution')
-    
-    plt.tight_layout()
-    plt.savefig(output_file3, dpi=300, bbox_inches='tight')
-    plt.show()
-    print(f"   ✓ Saved: {output_file3}")
-    
-    # 7. Generate actionable report
-    print("\n7. Generating actionable insights...")
-    print("="*70)
-    print("ACTIONABLE RECOMMENDATIONS")
-    print("="*70)
-    
-    # Sort clusters by size for prioritization
-    sorted_clusters = sorted(cluster_summaries, key=lambda x: x['size'], reverse=True)
-    
-    for rank, cluster in enumerate(sorted_clusters[:3], 1):
-        print(f"\nPRIORITY {rank}: Fix Cluster {cluster['cluster_id']} ({cluster['size']} items)")
-        print(f"This represents {cluster['percentage']:.1f}% of all items")
-        print(f"Common pattern: {cluster['top_terms']}")
-        print(f"Example: \"{cluster['sample_text'][:100]}...\"")
-        
-        # Suggest fixes based on terms
-        terms_lower = cluster['top_terms'].lower()
-        if 'format' in terms_lower:
-            print("→ SUGGESTED FIX: Implement post-processing formatters")
-        elif 'missing' in terms_lower or 'not provided' in terms_lower or 'no' in terms_lower:
-            print("→ SUGGESTED FIX: Review extraction prompts and add validation")
-        elif 'wrong' in terms_lower or 'incorrect' in terms_lower:
-            print("→ SUGGESTED FIX: Add negative examples to prompts")
-        elif 'merge' in terms_lower or 'classification' in terms_lower:
-            print("→ SUGGESTED FIX: Review data merging/classification logic")
-        else:
-            print("→ SUGGESTED FIX: Manual review needed for pattern identification")
-    
-    print("\n" + "="*70)
-    print("CLUSTERING COMPLETE!")
-    print("="*70)
-    
-    return df_with_text, summary_df
-
-def find_optimal_k(csv_file=CSV_FILE, text_column=TEXT_COLUMN, max_k=15):
-    """
-    Find the optimal number of clusters using elbow method
-    """
-    print("\nFINDING OPTIMAL NUMBER OF CLUSTERS...")
-    print("-"*50)
     
     # Load data
-    try:
-        df = pd.read_csv(csv_file)
-        texts = df[text_column].dropna().astype(str).tolist()
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        return 8  # Return default if error
+    df = pd.read_csv(csv_file)
     
-    vectorizer = TfidfVectorizer(max_features=100, stop_words='english', ngram_range=(1, 3), min_df=2)
-    try:
-        X = vectorizer.fit_transform(texts)
-    except:
-        vectorizer.min_df = 1
-        X = vectorizer.fit_transform(texts)
+    # Get only non-empty justifications
+    justifications = df[text_column].dropna().astype(str).tolist()
+    justifications = [j for j in justifications if j.strip() and j.lower() != 'nan']
     
-    # Test different k values
-    K = range(2, min(max_k, len(texts)//10))  # Don't test more than 10% of data size
-    inertias = []
-    silhouette_scores = []
+    print(f"\nAnalyzing {len(justifications)} user justifications...")
+    print("-"*70)
     
-    for k in K:
-        kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-        kmeans.fit(X)
-        inertias.append(kmeans.inertia_)
-        
-        score = silhouette_score(X, kmeans.labels_)
-        silhouette_scores.append(score)
-        print(f"k={k}: silhouette score = {score:.3f}")
+    # 1. Most common complete justifications
+    print("\n1. TOP 20 EXACT JUSTIFICATIONS (most repeated):")
+    exact_counts = Counter(justifications)
+    for i, (just, count) in enumerate(exact_counts.most_common(20), 1):
+        if count > 1:  # Only show if appears more than once
+            print(f"{i:2d}. [{count:3d}x] \"{just[:80]}{'...' if len(just) > 80 else ''}\"")
     
-    # Plot results
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    # 2. Common words/phrases
+    print("\n\n2. MOST COMMON WORDS:")
+    all_text = ' '.join(justifications).lower()
+    # Remove common words
+    stop_words = {'the', 'a', 'an', 'is', 'was', 'are', 'were', 'been', 'be', 'have', 'has', 'had', 
+                  'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might',
+                  'to', 'of', 'in', 'for', 'on', 'at', 'by', 'with', 'from', 'as', 'or', 'and'}
     
-    # Elbow curve
-    ax1.plot(K, inertias, 'bo-')
-    ax1.set_xlabel('Number of Clusters (k)')
-    ax1.set_ylabel('Inertia')
-    ax1.set_title('Elbow Method')
-    ax1.grid(True)
+    words = [word for word in all_text.split() if word not in stop_words and len(word) > 2]
+    word_counts = Counter(words).most_common(20)
     
-    # Silhouette scores
-    ax2.plot(K, silhouette_scores, 'ro-')
-    ax2.set_xlabel('Number of Clusters (k)')
-    ax2.set_ylabel('Silhouette Score')
-    ax2.set_title('Silhouette Score by k')
-    ax2.grid(True)
+    # Print in columns for better readability
+    for i in range(0, len(word_counts[:20]), 2):
+        if i+1 < len(word_counts):
+            print(f"{i+1:2d}. '{word_counts[i][0]:<15}' ({word_counts[i][1]:>4})    "
+                  f"{i+2:2d}. '{word_counts[i+1][0]:<15}' ({word_counts[i+1][1]:>4})")
+        else:
+            print(f"{i+1:2d}. '{word_counts[i][0]:<15}' ({word_counts[i][1]:>4})")
     
-    plt.tight_layout()
-    plt.savefig(f'{OUTPUT_PREFIX}_optimal_k.png', dpi=300)
-    plt.show()
+    # 3. Common 3-word phrases (skip 2-word, go straight to more meaningful 3-word)
+    print("\n\n3. MOST COMMON 3-WORD PHRASES:")
+    words_list = all_text.split()
+    three_grams = []
+    for i in range(len(words_list)-2):
+        phrase = f"{words_list[i]} {words_list[i+1]} {words_list[i+2]}"
+        three_grams.append(phrase)
     
-    # Find optimal k (highest silhouette score)
-    optimal_k = K[np.argmax(silhouette_scores)]
-    print(f"\n✓ RECOMMENDED k = {optimal_k} (highest silhouette score: {max(silhouette_scores):.3f})")
+    three_gram_counts = Counter(three_grams).most_common(30)
+    for i, (phrase, count) in enumerate(three_gram_counts[:20], 1):
+        if count > 2:
+            print(f"{i:2d}. '{phrase}' - {count} times")
     
-    return optimal_k
+    # 4. Pattern-based categorization (THE MOST IMPORTANT PART)
+    print("\n\n4. PATTERN-BASED CATEGORIES:")
+    patterns = {
+        'Format Issues': [r'format', r'formatting', r'should be', r'needs to be'],
+        'Missing Information': [r'missing', r'not provided', r'no .* provided', r'not found', r'unable to', r'not extracted'],
+        'Wrong Extraction': [r'extracted', r'wrong', r'incorrect', r'instead of', r'should be .* not'],
+        'Name Issues': [r'name', r'first name', r'last name', r'patient name', r'hcp name', r'hanh'],
+        'Phone Issues': [r'phone', r'telephone', r'contact number', r'cell', r'mobile'],
+        'Date Issues': [r'date', r'dob', r'birth', r'appointment'],
+        'Address Issues': [r'address', r'street', r'city', r'state', r'zip'],
+        'Contact/Consent': [r'contact', r'consent', r'reporter', r'given'],
+        'Classification/Merge': [r'classification', r'merge', r'category', r'combined'],
+        'Partial Extraction': [r'partial', r'incomplete', r'only .* extracted', r'rest of']
+    }
+    
+    category_counts = {cat: 0 for cat in patterns}
+    category_examples = {cat: [] for cat in patterns}
+    uncategorized = []
+    
+    for just in justifications:
+        just_lower = just.lower()
+        categorized = False
+        for category, pattern_list in patterns.items():
+            for pattern in pattern_list:
+                if re.search(pattern, just_lower):
+                    category_counts[category] += 1
+                    if len(category_examples[category]) < 3:
+                        category_examples[category].append(just)
+                    categorized = True
+                    break
+            if categorized:
+                break
+        if not categorized:
+            uncategorized.append(just)
+    
+    # Sort by count
+    sorted_categories = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)
+    
+    print(f"\n{'Category':<25} {'Count':>8} {'Percent':>8}")
+    print("-" * 45)
+    for category, count in sorted_categories:
+        if count > 0:
+            print(f"{category:<25} {count:>8} {count/len(justifications)*100:>7.1f}%")
+    
+    print(f"\n{'Uncategorized':<25} {len(uncategorized):>8} {len(uncategorized)/len(justifications)*100:>7.1f}%")
+    
+    # Show examples for top categories
+    print("\n\nTOP CATEGORY EXAMPLES:")
+    for category, count in sorted_categories[:5]:
+        if count > 0 and category_examples[category]:
+            print(f"\n{category} ({count} cases):")
+            for i, ex in enumerate(category_examples[category], 1):
+                print(f"  {i}. \"{ex[:100]}...\"" if len(ex) > 100 else f"  {i}. \"{ex}\"")
+    
+    # 5. Actionable Summary
+    print("\n\n5. ACTIONABLE SUMMARY:")
+    print("="*70)
+    
+    total_categorized = sum(category_counts.values())
+    print(f"Total justifications: {len(justifications)}")
+    print(f"Categorized: {total_categorized} ({total_categorized/len(justifications)*100:.1f}%)")
+    print(f"Uncategorized: {len(uncategorized)} ({len(uncategorized)/len(justifications)*100:.1f}%)")
+    
+    print("\nTOP 3 ISSUES TO FIX:")
+    for i, (category, count) in enumerate(sorted_categories[:3], 1):
+        if count > 0:
+            print(f"\n{i}. {category} - {count} cases ({count/len(justifications)*100:.1f}%)")
+            if 'Format' in category:
+                print("   → Fix: Implement post-processing formatters")
+            elif 'Missing' in category:
+                print("   → Fix: Enhance extraction rules and validation")
+            elif 'Wrong' in category:
+                print("   → Fix: Improve prompt specificity and add examples")
+            elif 'Name' in category:
+                print("   → Fix: Add name parsing and validation rules")
+            elif 'Phone' in category:
+                print("   → Fix: Add phone number formatter and validator")
+    
+    # 6. Export results
+    print("\n\nSAVING RESULTS...")
+    
+    # Create pattern analysis dataframe
+    pattern_df = pd.DataFrame({'justification': justifications})
+    
+    # Add category flags
+    for category, pattern_list in patterns.items():
+        pattern_df[f'is_{category.lower().replace(" ", "_").replace("/", "_")}'] = pattern_df['justification'].apply(
+            lambda x: any(re.search(p, x.lower()) for p in pattern_list)
+        )
+    
+    pattern_df.to_csv('justification_patterns.csv', index=False)
+    print("✓ Saved: justification_patterns.csv")
+    
+    # Save uncategorized for review
+    if uncategorized:
+        uncategorized_df = pd.DataFrame({'uncategorized_justification': uncategorized[:50]})  # Top 50
+        uncategorized_df.to_csv('uncategorized_justifications.csv', index=False)
+        print("✓ Saved: uncategorized_justifications.csv (top 50 for review)")
+    
+    return pattern_df
 
-# Main execution
+# Run the analysis
 if __name__ == "__main__":
-    print("Starting K-Means Clustering Analysis...")
-    print(f"Configuration:")
-    print(f"  File: {CSV_FILE}")
-    print(f"  Column: {TEXT_COLUMN}")
-    print(f"  Output prefix: {OUTPUT_PREFIX}")
-    
-    # Option 1: Use default k=8
-    # df, summary = kmeans_error_clustering()
-    
-    # Option 2: Find optimal k first, then cluster (recommended)
-    optimal_k = find_optimal_k()
-    df, summary = kmeans_error_clustering(n_clusters=optimal_k)
+    pattern_df = find_patterns_in_justifications()
